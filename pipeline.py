@@ -33,12 +33,12 @@ from prompts import (
 # ── Pydantic 모델 — 구조화 추출 결과 ─────────────────────────────────────────
 class NewsStructured(BaseModel):
     """Step 2 구조화 추출 결과. 출처 정보 보존용."""
-    title: str = Field(description="기사 제목")
-    category: str = Field(description="기사 종류", examples=["정치", "생활/문화"])
-    content: str = Field(description="기사 내용 (원문 그대로 추출)")
-    press: str = Field(description="언론사 이름. 없으면 빈 문자열", examples=["조선일보"])
-    author: str = Field(description="작성자 이름. 없으면 빈 문자열", examples=["홍길동"])
-    published_date: str = Field(description="작성일. 없으면 빈 문자열", examples=["2026.01.01"])
+    title: str = Field(description="기사 제목", default="")
+    category: str = Field(description="기사 종류", examples=["정치", "생활/문화"], default="")
+    content: str = Field(description="기사 내용 (원문 그대로 추출)", default="")
+    press: str = Field(description="언론사 이름. 없으면 빈 문자열", examples=["조선일보"], default="")
+    author: str = Field(description="작성자 이름. 없으면 빈 문자열", examples=["홍길동"], default="")
+    published_date: str = Field(description="작성일. 없으면 빈 문자열", examples=["2026.01.01"], default="")
 
 
 # ── 파이프라인 최종 결과 ──────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def get_llm(api_key: str, temperature: float = 0.3) -> ChatGoogleGenerativeAI:
         model=model,
         google_api_key=api_key,
         temperature=temperature,
-        max_output_tokens=1024,
+        max_output_tokens=4096,
     )
 
 
@@ -98,12 +98,9 @@ def run_filter(chain, title: str, content: str) -> tuple[bool, str]:
 
 # ── Step 2: 구조화 추출 ───────────────────────────────────────────────────────
 def build_structured_chain(llm):
-    """
-    with_structured_output()으로 Pydantic 모델을 직접 반환하는 체인.
-    LangChain이 내부적으로 JSON 스키마를 시스템 프롬프트에 주입합니다.
-    """
     structured_llm = llm.with_structured_output(NewsStructured)
     prompt = ChatPromptTemplate.from_messages([
+        ("system", "뉴스 기사에서 메타 정보를 추출해 JSON으로 반환하세요. 알 수 없는 필드는 빈 문자열(\"\")로 채우세요. 모든 필드를 반드시 포함하세요."),
         ("human", STRUCTURED_EXTRACT_USER),
     ])
     return prompt | structured_llm

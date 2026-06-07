@@ -227,8 +227,22 @@ with tab_result:
 
         # ── 생성된 학습 콘텐츠 ────────────────────────────────────────────
         st.subheader("📝 생성된 학습 콘텐츠")
-        st.markdown(generated)
-        content = generated  # 하위 통계 계산용
+        # 제목/본문 파싱
+        gen_lines = generated.strip().splitlines()
+        if gen_lines and gen_lines[0].startswith("제목:"):
+            content_title = gen_lines[0].replace("제목:", "").strip()
+            content_body = "\n".join(gen_lines[1:]).strip()
+        else:
+            content_title = ""
+            content_body = generated.strip()
+
+        if content_title:
+            st.markdown(f"### {content_title}")
+        st.markdown(
+            f'<div style="white-space: pre-line; line-height: 1.8; font-size: 15px">{content_body}</div>',
+            unsafe_allow_html=True,
+        )
+        content = content_body  # 하위 통계 계산용
 
         # 유사도 / 재생성 요약
         sim_pct = round(similarity * 100, 1)

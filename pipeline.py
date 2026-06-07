@@ -120,7 +120,7 @@ def run_structured_extract(
     return chain.invoke({
         "title": title,
         "category": cat_label,
-        "content": content[:2000],
+        "content": content[:4000],
     })
 
 
@@ -142,7 +142,7 @@ def run_fact_extract(chain, category: str, title: str, content: str) -> str:
     return chain.invoke({
         "category": cat_label,
         "title": title,
-        "content": content[:2000],
+        "content": content[:4000],
     })
 
 

@@ -2,6 +2,7 @@
 # Streamlit 메인 앱
 # 실행: streamlit run app.py
 
+import html
 import json
 import os
 from pathlib import Path
@@ -169,9 +170,10 @@ with tab_result:
         # ── Step 3: 사실 추출 ─────────────────────────────────────────────
         with st.status("③ 사실 추출 중…", expanded=False) as s3:
             fa_chain = build_fact_chain(llm)
-            # news_obj.content만 넘김 — press/author는 차단
+            # news_obj.content가 비면 원문으로 폴백
+            fact_content = news_obj.content or article["content_clean"]
             facts = run_fact_extract(
-                fa_chain, article["category"], news_obj.title, news_obj.content
+                fa_chain, article["category"], news_obj.title or article["title"], fact_content
             )
             s3.update(label="✅ ③ 사실 추출 완료", state="complete")
 
@@ -239,7 +241,7 @@ with tab_result:
         if content_title:
             st.markdown(f"### {content_title}")
         st.markdown(
-            f'<div style="white-space: pre-line; line-height: 1.8; font-size: 15px">{content_body}</div>',
+            f'<div style="white-space: pre-line; line-height: 1.8; font-size: 15px">{html.escape(content_body)}</div>',
             unsafe_allow_html=True,
         )
         content = content_body  # 하위 통계 계산용

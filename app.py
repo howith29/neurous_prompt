@@ -11,7 +11,12 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from pipeline import run_pipeline, calc_stats, check_constraints
-from prompts import CATEGORY_LABELS, LEVEL_CONSTRAINTS
+from prompts import (
+    CATEGORY_LABELS, LEVEL_CONSTRAINTS,
+    FILTER_SYSTEM, FILTER_USER,
+    FACT_EXTRACT_SYSTEM, FACT_EXTRACT_USER,
+    CONTENT_GEN_SYSTEM, CONTENT_GEN_USER,
+)
 
 # ── 환경 변수 로드 ────────────────────────────────────────────────────────────
 # 로컬: .env 파일 사용
@@ -66,6 +71,19 @@ init_saved_prompts()
 news_data = load_news_data()
 api_key = get_api_key()
 
+# ── 커스텀 프롬프트 세션 초기화 ───────────────────────────────────────────────
+_PROMPT_DEFAULTS = {
+    "custom_filter_system":  FILTER_SYSTEM,
+    "custom_filter_user":    FILTER_USER,
+    "custom_fact_system":    FACT_EXTRACT_SYSTEM,
+    "custom_fact_user":      FACT_EXTRACT_USER,
+    "custom_content_system": CONTENT_GEN_SYSTEM,
+    "custom_content_user":   CONTENT_GEN_USER,
+}
+for _k, _v in _PROMPT_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
 # API 키 없을 때 경고
 if not api_key:
     st.error("⚠️ GOOGLE_API_KEY가 설정되지 않았습니다. .env 파일 또는 Streamlit secrets를 확인하세요.")
@@ -106,10 +124,19 @@ with st.sidebar:
 
     st.divider()
 
-    # 원문 미리보기
-    with st.expander("📄 원문 미리보기"):
-        st.markdown(f"**제목:** {article['title']}")
-        st.text_area("본문 (앞 500자)", article["content_clean"][:500] + "…", height=150, disabled=True)
+    # 저작권 검증 파라미터
+    st.markdown("**저작권 검증 설정**")
+    sim_threshold = st.slider(
+        "유사도 임계값",
+        min_value=0.1, max_value=0.9, value=0.5, step=0.05,
+        help="이 값 이상이면 재생성합니다. 낮을수록 더 엄격하게 판단.",
+        format="%.2f",
+    )
+    max_regen = st.number_input(
+        "최대 재생성 횟수",
+        min_value=0, max_value=5, value=2, step=1,
+        help="유사도 초과 시 재생성을 최대 몇 번까지 시도할지.",
+    )
 
     st.divider()
 
@@ -123,11 +150,20 @@ tab_result, tab_arch, tab_prompt, tab_saved = st.tabs(["📊 실행 결과", "�
 
 # ── 탭 1: 실행 결과 ───────────────────────────────────────────────────────────
 with tab_result:
+    with st.expander("📰 원문 기사 전문보기", expanded=False):
+        st.markdown(f"**{article['title']}**")
+        st.caption(f"카테고리: {CATEGORY_LABELS[article['category']]}")
+        st.divider()
+        st.markdown(
+            f'<div style="white-space: pre-line; line-height: 1.8; font-size: 14px; color: #333">'
+            f'{html.escape(article["content_clean"])}</div>',
+            unsafe_allow_html=True,
+        )
+
     if run_btn:
         st.subheader(f"🗞 {article['title']}")
         st.caption(f"카테고리: {CATEGORY_LABELS[article['category']]} · 난이도: {LEVEL_CONSTRAINTS[level_code]['label']}")
 
-        # 5단계 진행 표시
         from pipeline import (
             get_llm,
             build_filter_chain, run_filter,
@@ -135,13 +171,20 @@ with tab_result:
             build_fact_chain, run_fact_extract,
             build_content_chain, run_content_gen,
             cosine_similarity,
-            SIMILARITY_THRESHOLD, MAX_REGEN,
         )
         llm = get_llm(api_key)
 
+        # 이번 실행에 사용할 커스텀 프롬프트 스냅샷
+        _f_sys  = st.session_state.custom_filter_system
+        _f_usr  = st.session_state.custom_filter_user
+        _fa_sys = st.session_state.custom_fact_system
+        _fa_usr = st.session_state.custom_fact_user
+        _c_sys  = st.session_state.custom_content_system
+        _c_usr  = st.session_state.custom_content_user
+
         # ── Step 1: 필터 ──────────────────────────────────────────────────
         with st.status("① 필터 검사 중…", expanded=False) as s1:
-            f_chain = build_filter_chain(llm)
+            f_chain = build_filter_chain(llm, system_prompt=_f_sys, user_prompt=_f_usr)
             passed, reason = run_filter(f_chain, article["title"], article["content_clean"])
             if passed:
                 s1.update(label=f"✅ ① 필터 통과 — {reason}", state="complete")
@@ -160,7 +203,6 @@ with tab_result:
             )
             s2.update(label="✅ ② 구조화 추출 완료", state="complete")
 
-        # 출처 정보 표시 (참고용)
         with st.expander("📋 추출된 출처 정보 (언론사·작성자·날짜)"):
             meta_col1, meta_col2, meta_col3 = st.columns(3)
             meta_col1.metric("언론사", news_obj.press or "미확인")
@@ -169,8 +211,7 @@ with tab_result:
 
         # ── Step 3: 사실 추출 ─────────────────────────────────────────────
         with st.status("③ 사실 추출 중…", expanded=False) as s3:
-            fa_chain = build_fact_chain(llm)
-            # news_obj.content가 비면 원문으로 폴백
+            fa_chain = build_fact_chain(llm, system_prompt=_fa_sys, user_prompt=_fa_usr)
             fact_content = news_obj.content or article["content_clean"]
             facts = run_fact_extract(
                 fa_chain, article["category"], news_obj.title or article["title"], fact_content
@@ -181,12 +222,12 @@ with tab_result:
             st.info(facts)
 
         # ── Step 4 + 5: 콘텐츠 생성 + 유사도 검증 루프 ───────────────────
-        c_chain = build_content_chain(llm)
+        c_chain = build_content_chain(llm, system_prompt=_c_sys, user_prompt=_c_usr)
         regen_count = 0
         similarity = 0.0
         generated = ""
 
-        for attempt in range(MAX_REGEN + 1):
+        for attempt in range(int(max_regen) + 1):
             is_regen = attempt > 0
             label = f"④ 콘텐츠 생성 중{'… (재생성 #' + str(attempt) + ')' if is_regen else '…'}"
 
@@ -194,11 +235,10 @@ with tab_result:
                 generated = run_content_gen(
                     c_chain, article["category"], facts, level_code, regen=is_regen
                 )
-                # Step 5: 유사도 체크
                 similarity = cosine_similarity(news_obj.content, generated)
                 sim_pct = round(similarity * 100, 1)
 
-                if similarity < SIMILARITY_THRESHOLD:
+                if similarity < sim_threshold:
                     s4.update(
                         label=f"✅ ④ 콘텐츠 생성 완료 — 유사도 {sim_pct}% (안전)",
                         state="complete",
@@ -248,8 +288,8 @@ with tab_result:
 
         # 유사도 / 재생성 요약
         sim_pct = round(similarity * 100, 1)
-        sim_color = "🟢" if similarity < SIMILARITY_THRESHOLD else "🔴"
-        info_parts = [f"{sim_color} 원문 유사도: **{sim_pct}%** (임계값: {int(SIMILARITY_THRESHOLD*100)}%)"]
+        sim_color = "🟢" if similarity < sim_threshold else "🔴"
+        info_parts = [f"{sim_color} 원문 유사도: **{sim_pct}%** (임계값: {int(sim_threshold*100)}%)"]
         if regen_count:
             info_parts.append(f"🔁 재생성: {regen_count}회")
         st.caption("  ·  ".join(info_parts))
@@ -285,6 +325,37 @@ with tab_result:
             "stats": stats,
             "checks": checks,
         }
+
+        # ── 실행 로그 ─────────────────────────────────────────────────────
+        st.divider()
+        with st.expander("🪵 실행 로그 (사용된 프롬프트 & 출력 원문)"):
+            log_tabs = st.tabs(["① 필터", "③ 사실 추출", "④ 콘텐츠 생성"])
+
+            with log_tabs[0]:
+                st.markdown("**[시스템 프롬프트]**")
+                st.code(_f_sys, language="text")
+                st.markdown("**[유저 프롬프트]** *(변수 치환 전)*")
+                st.code(_f_usr, language="text")
+                st.markdown("**[LLM 입력 — title / content]**")
+                st.code(f"title: {article['title']}\ncontent: {article['content_clean'][:300]}…", language="text")
+
+            with log_tabs[1]:
+                st.markdown("**[시스템 프롬프트]**")
+                st.code(_fa_sys, language="text")
+                st.markdown("**[유저 프롬프트]** *(변수 치환 전)*")
+                st.code(_fa_usr, language="text")
+                st.markdown("**[출력 결과]**")
+                st.code(facts, language="text")
+
+            with log_tabs[2]:
+                st.markdown("**[시스템 프롬프트]**")
+                st.code(_c_sys, language="text")
+                st.markdown("**[유저 프롬프트]** *(변수 치환 전)*")
+                st.code(_c_usr, language="text")
+                st.markdown(f"**[주입된 level_constraint — {LEVEL_CONSTRAINTS[level_code]['label']}]**")
+                st.code(LEVEL_CONSTRAINTS[level_code]["description"], language="text")
+                st.markdown("**[출력 결과]**")
+                st.code(generated, language="text")
 
     else:
         st.info("왼쪽에서 기사와 난이도를 선택하고 **▶ 파이프라인 실행** 버튼을 눌러주세요.\n\n파이프라인 구조는 **🏗 파이프라인 구조** 탭에서 확인할 수 있습니다.")
@@ -395,69 +466,92 @@ with tab_arch:
 
 
 
-# ── 탭 2: 프롬프트 수정 ───────────────────────────────────────────────────────
+# ── 탭 3: 프롬프트 수정 ───────────────────────────────────────────────────────
 with tab_prompt:
     st.subheader("🔧 프롬프트 수정")
-    st.caption("각 단계의 프롬프트를 수정하고 저장할 수 있습니다. 수정 후 실행하면 즉시 반영됩니다.")
-
-    # prompts.py 의 기본값을 세션에 초기화
-    from prompts import FILTER_SYSTEM, FACT_EXTRACT_SYSTEM, CONTENT_GEN_SYSTEM
-    if "custom_filter_system" not in st.session_state:
-        st.session_state.custom_filter_system = FILTER_SYSTEM
-    if "custom_fact_system" not in st.session_state:
-        st.session_state.custom_fact_system = FACT_EXTRACT_SYSTEM
-    if "custom_content_system" not in st.session_state:
-        st.session_state.custom_content_system = CONTENT_GEN_SYSTEM
+    st.warning(
+        "⚠️ **`{변수명}` 은 삭제하지 마세요.** 실행 시 실제 값으로 자동 치환됩니다. "
+        "변수를 지우면 파이프라인이 오류를 냅니다.",
+        icon=None,
+    )
+    st.caption("수정 후 **▶ 파이프라인 실행**을 누르면 변경된 프롬프트가 즉시 반영됩니다.")
 
     p1, p2, p3 = st.tabs(["① 필터 프롬프트", "② 사실 추출 프롬프트", "③ 콘텐츠 생성 프롬프트"])
 
     with p1:
+        st.markdown("##### 시스템 프롬프트")
         st.session_state.custom_filter_system = st.text_area(
-            "필터 시스템 프롬프트",
-            value=st.session_state.custom_filter_system,
-            height=350,
-            key="filter_sys_input",
+            "필터 시스템 프롬프트", value=st.session_state.custom_filter_system,
+            height=300, key="filter_sys_input", label_visibility="collapsed",
+        )
+        st.markdown("##### 유저 프롬프트")
+        st.caption("변수: `{title}` `{content}`")
+        st.session_state.custom_filter_user = st.text_area(
+            "필터 유저 프롬프트", value=st.session_state.custom_filter_user,
+            height=130, key="filter_usr_input", label_visibility="collapsed",
         )
 
     with p2:
+        st.markdown("##### 시스템 프롬프트")
         st.session_state.custom_fact_system = st.text_area(
-            "사실 추출 시스템 프롬프트",
-            value=st.session_state.custom_fact_system,
-            height=350,
-            key="fact_sys_input",
+            "사실 추출 시스템 프롬프트", value=st.session_state.custom_fact_system,
+            height=300, key="fact_sys_input", label_visibility="collapsed",
+        )
+        st.markdown("##### 유저 프롬프트")
+        st.caption("변수: `{category}` `{title}` `{content}`")
+        st.session_state.custom_fact_user = st.text_area(
+            "사실 추출 유저 프롬프트", value=st.session_state.custom_fact_user,
+            height=130, key="fact_usr_input", label_visibility="collapsed",
         )
 
     with p3:
+        st.markdown("##### 시스템 프롬프트")
         st.session_state.custom_content_system = st.text_area(
-            "콘텐츠 생성 시스템 프롬프트",
-            value=st.session_state.custom_content_system,
-            height=350,
-            key="content_sys_input",
+            "콘텐츠 생성 시스템 프롬프트", value=st.session_state.custom_content_system,
+            height=300, key="content_sys_input", label_visibility="collapsed",
         )
+        st.markdown("##### 유저 프롬프트")
+        st.caption("변수: `{level_constraint}` `{category}` `{facts}`")
+        st.session_state.custom_content_user = st.text_area(
+            "콘텐츠 생성 유저 프롬프트", value=st.session_state.custom_content_user,
+            height=150, key="content_usr_input", label_visibility="collapsed",
+        )
+
+        st.divider()
+        st.markdown("##### 📌 `{level_constraint}` 고정 변수값 (읽기 전용)")
+        st.caption("`{level_constraint}` 에는 아래 내용이 난이도에 따라 자동으로 주입됩니다.")
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            st.info(f"**초급 (BEGINNER)**\n\n{LEVEL_CONSTRAINTS['BEGINNER']['description']}")
+        with lc2:
+            st.info(f"**중급 (INTERMEDIATE)**\n\n{LEVEL_CONSTRAINTS['INTERMEDIATE']['description']}")
+        with lc3:
+            st.info(f"**고급 (ADVANCED)**\n\n{LEVEL_CONSTRAINTS['ADVANCED']['description']}")
 
     st.divider()
 
-    # 저장
     save_col1, save_col2 = st.columns([3, 1])
     with save_col1:
         save_name = st.text_input("저장 이름 (예: v2_더_엄격한_필터)", key="prompt_save_name")
     with save_col2:
-        st.write("")  # 정렬용
+        st.write("")
         if st.button("💾 저장", use_container_width=True):
             if save_name.strip():
                 save_prompt(save_name.strip(), {
-                    "filter": st.session_state.custom_filter_system,
-                    "fact":   st.session_state.custom_fact_system,
-                    "content": st.session_state.custom_content_system,
+                    "filter_system":  st.session_state.custom_filter_system,
+                    "filter_user":    st.session_state.custom_filter_user,
+                    "fact_system":    st.session_state.custom_fact_system,
+                    "fact_user":      st.session_state.custom_fact_user,
+                    "content_system": st.session_state.custom_content_system,
+                    "content_user":   st.session_state.custom_content_user,
                 })
                 st.success(f"'{save_name}' 저장 완료!")
             else:
                 st.warning("저장 이름을 입력해주세요.")
 
     if st.button("🔄 기본값으로 초기화"):
-        st.session_state.custom_filter_system = FILTER_SYSTEM
-        st.session_state.custom_fact_system = FACT_EXTRACT_SYSTEM
-        st.session_state.custom_content_system = CONTENT_GEN_SYSTEM
+        for k, v in _PROMPT_DEFAULTS.items():
+            st.session_state[k] = v
         st.rerun()
 
 
@@ -470,16 +564,24 @@ with tab_saved:
     else:
         for i, p in enumerate(st.session_state.saved_prompts):
             with st.expander(f"📌 {p['name']}"):
-                st.text_area("필터 프롬프트", p["prompts"]["filter"], height=100, disabled=True, key=f"sp_f_{i}")
-                st.text_area("사실 추출 프롬프트", p["prompts"]["fact"], height=100, disabled=True, key=f"sp_fa_{i}")
-                st.text_area("콘텐츠 생성 프롬프트", p["prompts"]["content"], height=100, disabled=True, key=f"sp_c_{i}")
+                pr = p["prompts"]
+                sp1, sp2, sp3 = st.tabs(["① 필터", "② 사실 추출", "③ 콘텐츠 생성"])
+                with sp1:
+                    st.text_area("시스템", pr.get("filter_system", ""), height=80, disabled=True, key=f"sp_fs_{i}")
+                    st.text_area("유저", pr.get("filter_user", ""), height=60, disabled=True, key=f"sp_fu_{i}")
+                with sp2:
+                    st.text_area("시스템", pr.get("fact_system", ""), height=80, disabled=True, key=f"sp_fas_{i}")
+                    st.text_area("유저", pr.get("fact_user", ""), height=60, disabled=True, key=f"sp_fau_{i}")
+                with sp3:
+                    st.text_area("시스템", pr.get("content_system", ""), height=80, disabled=True, key=f"sp_cs_{i}")
+                    st.text_area("유저", pr.get("content_user", ""), height=60, disabled=True, key=f"sp_cu_{i}")
 
                 col_load, col_del = st.columns(2)
                 with col_load:
                     if st.button("📂 불러오기", key=f"load_{i}"):
-                        st.session_state.custom_filter_system = p["prompts"]["filter"]
-                        st.session_state.custom_fact_system = p["prompts"]["fact"]
-                        st.session_state.custom_content_system = p["prompts"]["content"]
+                        for key in ["filter_system", "filter_user", "fact_system", "fact_user", "content_system", "content_user"]:
+                            if key in pr:
+                                st.session_state[f"custom_{key}"] = pr[key]
                         st.success("불러왔습니다. '프롬프트 수정' 탭에서 확인하세요.")
                 with col_del:
                     if st.button("🗑 삭제", key=f"del_{i}"):

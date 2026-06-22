@@ -8,6 +8,7 @@
 # Step 5: Cosine Similarity     — TF-IDF 기반 원문 유사도 검증 + 재생성
 
 import os
+import sys
 import math
 import re
 from collections import Counter
@@ -18,7 +19,6 @@ from pydantic import BaseModel, Field
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
 from prompts import (
     FILTER_SYSTEM, FILTER_USER,
@@ -28,6 +28,40 @@ from prompts import (
     CONTENT_REGEN_HINT,
     LEVEL_CONSTRAINTS, CATEGORY_LABELS,
 )
+
+
+# ── 터미널 로거 ───────────────────────────────────────────────────────────────
+def _log(msg: str):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _log_llm(step: str, response) -> str:
+    """AIMessage 메타데이터(토큰·finish_reason)를 터미널에 출력하고 content 문자열을 반환."""
+    meta = getattr(response, "response_metadata", {}) or {}
+    usage = meta.get("usage_metadata") or {}
+    finish = meta.get("finish_reason", "unknown")
+
+    in_tok  = usage.get("input_token_count",  usage.get("prompt_tokens", "?"))
+    out_tok = usage.get("output_token_count", usage.get("completion_tokens", "?"))
+
+    raw = response.content if hasattr(response, "content") else str(response)
+    # langchain-google-genai 신버전은 content가 list[dict] 형태일 수 있음
+    if isinstance(raw, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in raw
+        )
+    else:
+        content = str(raw)
+
+    _log(f"\n{'='*60}")
+    _log(f"[{step}]")
+    _log(f"  finish_reason : {finish}")
+    _log(f"  tokens        : input={in_tok}  output={out_tok}")
+    _log(f"  output length : {len(content)}자")
+    _log(f"  output tail   : ...{repr(content[-40:])}")
+    _log(f"{'='*60}\n")
+    return content
 
 
 # ── Pydantic 모델 — 구조화 추출 결과 ─────────────────────────────────────────
@@ -64,32 +98,31 @@ class PipelineResult:
 def get_llm(api_key: str, temperature: float = 0.3) -> ChatGoogleGenerativeAI:
     """Gemini Flash LLM 인스턴스를 반환합니다."""
     model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    _log(f"[LLM] model={model}  temperature={temperature}  max_output_tokens=8192")
     return ChatGoogleGenerativeAI(
         model=model,
         google_api_key=api_key,
         temperature=temperature,
-        max_output_tokens=4096,
+        max_output_tokens=8192,
     )
 
 
 # ── Step 1: 필터 체인 ─────────────────────────────────────────────────────────
-def build_filter_chain(llm):
+def build_filter_chain(llm, system_prompt: str = None, user_prompt: str = None):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", FILTER_SYSTEM),
-        ("human", FILTER_USER),
+        ("system", system_prompt or FILTER_SYSTEM),
+        ("human",  user_prompt  or FILTER_USER),
     ])
-    return prompt | llm | StrOutputParser()
+    return prompt | llm  # AIMessage 반환 (StrOutputParser 제거 → 메타데이터 보존)
 
 
 def run_filter(chain, title: str, content: str) -> tuple[bool, str]:
-    """
-    Returns:
-        (passed: bool, reason: str)
-    """
-    response = chain.invoke({"title": title, "content": content[:1500]})
-    passed = "PASS" in response.upper()
+    _log(f"[Step 1: Filter] title={title[:60]!r}  content={len(content)}자 입력")
+    raw = chain.invoke({"title": title, "content": content[:1500]})
+    text = _log_llm("Step 1: Filter", raw)
+    passed = "PASS" in text.upper()
     reason = "문제없음"
-    for line in response.splitlines():
+    for line in text.splitlines():
         if line.startswith("이유:"):
             reason = line.replace("이유:", "").strip()
             break
@@ -125,34 +158,32 @@ def run_structured_extract(
 
 
 # ── Step 3: 사실 추출 체인 ───────────────────────────────────────────────────
-def build_fact_chain(llm):
+def build_fact_chain(llm, system_prompt: str = None, user_prompt: str = None):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", FACT_EXTRACT_SYSTEM),
-        ("human", FACT_EXTRACT_USER),
+        ("system", system_prompt or FACT_EXTRACT_SYSTEM),
+        ("human",  user_prompt  or FACT_EXTRACT_USER),
     ])
-    return prompt | llm | StrOutputParser()
+    return prompt | llm
 
 
 def run_fact_extract(chain, category: str, title: str, content: str) -> str:
-    """
-    구조화 추출로 얻은 content만 받아 순수 사실을 추출합니다.
-    press / author 등 출처 정보는 의도적으로 넘기지 않습니다.
-    """
     cat_label = CATEGORY_LABELS.get(category, category)
-    return chain.invoke({
+    _log(f"[Step 3: Fact Extract] category={cat_label}  content={len(content)}자 입력")
+    raw = chain.invoke({
         "category": cat_label,
         "title": title,
         "content": content[:4000],
     })
+    return _log_llm("Step 3: Fact Extract", raw)
 
 
 # ── Step 4: 콘텐츠 생성 체인 ─────────────────────────────────────────────────
-def build_content_chain(llm):
+def build_content_chain(llm, system_prompt: str = None, user_prompt: str = None):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", CONTENT_GEN_SYSTEM),
-        ("human", CONTENT_GEN_USER),
+        ("system", system_prompt or CONTENT_GEN_SYSTEM),
+        ("human",  user_prompt  or CONTENT_GEN_USER),
     ])
-    return prompt | llm | StrOutputParser()
+    return prompt | llm
 
 
 def run_content_gen(
@@ -160,19 +191,21 @@ def run_content_gen(
     category: str,
     facts: str,
     level: str,
-    regen: bool = False,        # 재생성 여부
+    regen: bool = False,
 ) -> str:
     cat_label = CATEGORY_LABELS.get(category, category)
     level_constraint = LEVEL_CONSTRAINTS[level]["description"]
-
-    # 재생성 시 힌트를 사실 목록 앞에 추가
     facts_input = (CONTENT_REGEN_HINT + "\n\n" + facts) if regen else facts
 
-    return chain.invoke({
+    _log(f"[Step 4: Content Gen] level={level}  regen={regen}  facts={len(facts_input)}자")
+    raw = chain.invoke({
         "category": cat_label,
         "facts": facts_input,
         "level_constraint": level_constraint,
     })
+    result = _log_llm(f"Step 4: Content Gen (level={level}, regen={regen})", raw)
+    _log(f"[Step 4] 전체 출력:\n{result}\n{'─'*60}")
+    return result
 
 
 # ── Step 5: TF-IDF 코사인 유사도 ─────────────────────────────────────────────

@@ -10,3 +10,36 @@ wheels/
 .venv
 .env
 .streamlit
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+#coding agent
+.claude
+
+# news data(raw/created)
+*.csv
+*.xlsx
+# Local pipeline databases
+*.db
+*.db-wal
+*.db-shm
+
+# Local secrets and generated artifacts
+.env.*
+!.env.example
+.DS_Store
+new_pipeline/data/
+new_pipeline/logs/
+new_pipeline/exports/
+legacy/data/
+outputs/

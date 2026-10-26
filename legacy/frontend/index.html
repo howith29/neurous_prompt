@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>뉴로스 글 관리</title>
+<style>
+  body { font-family: -apple-system, "Malgun Gothic", sans-serif; margin: 40px; color: #222; }
+  h1 { font-size: 22px; }
+  .tabs { display: flex; gap: 8px; margin: 20px 0; }
+  .tabs button { padding: 10px 24px; border: 1px solid #333; background: #fff; cursor: pointer; }
+  .tabs button.active { background: #ddd; font-weight: bold; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+  th, td { border: 1px solid #999; padding: 8px 10px; font-size: 13px; text-align: left; }
+  th { background: #eee; }
+  .toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
+  button.primary { background: #b39ddb; border: 1px solid #7e57c2; padding: 10px 18px; cursor: pointer; }
+  button.secondary { background: #90caf9; border: 1px solid #1976d2; padding: 10px 18px; cursor: pointer; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; }
+  .modal-backdrop.open { display: flex; }
+  .modal { background: #fff; padding: 24px; width: 700px; max-height: 80vh; overflow: auto; }
+  .dropzone { border: 1px solid #333; padding: 60px; text-align: center; margin: 12px 0; }
+  .hint { color: #666; font-size: 12px; }
+  .settings label { margin-right: 16px; }
+  #genLogs { border: 1px solid #999; height: 200px; overflow: auto; padding: 10px; font-size: 12px; white-space: pre-wrap; }
+  .badge-fail { color: #c62828; font-weight: bold; }
+  .badge-ok { color: #2e7d32; }
+</style>
+</head>
+<body>
+
+<h1>뉴로스 글 관리</h1>
+<div class="tabs">
+  <button id="tabSourceBtn" class="active" onclick="switchTab('source')">Source List</button>
+  <button id="tabContentBtn" onclick="switchTab('content')">Content List</button>
+</div>
+
+<!-- ===================== Source List (Image 1) ===================== -->
+<div id="sourceTab">
+
+  <div class="toolbar">
+    <button class="secondary" onclick="openUploadModal()">기사 등록</button>
+    <button class="primary" onclick="openGenerationModal()">글 생성</button>
+  </div>
+  <h3>원본 기사 목록</h3>
+  <table>
+    <thead><tr><th></th><th>NO</th><th>카테고리</th><th>제목</th><th>출처 URL</th><th>글 생성 여부</th></tr></thead>
+    <tbody id="sourceTableBody"></tbody>
+  </table>
+</div>
+
+<!-- ===================== Content List (Image 2) ===================== -->
+<div id="contentTab" style="display:none">
+  <div class="toolbar">
+    <select id="filterCategory" onchange="loadContent()"><option value="">카테고리 선택</option></select>
+    <select id="filterLevel" onchange="loadContent()"><option value="">난이도 선택</option></select>
+    <select id="filterStatus" onchange="loadContent()">
+      <option value="">성공 여부 선택</option>
+      <option value="success">성공</option>
+      <option value="similarity_failed">유사도 실패</option>
+      <option value="filter_rejected">필터 실패</option>
+      <option value="error">오류</option>
+    </select>
+    <button class="secondary" onclick="generateQuiz()">퀴즈 생성</button>
+    <button class="primary" onclick="exportSelected()">글 내보내기</button>
+  </div>
+  <h3>생성된 기사 목록</h3>
+  <table>
+    <thead><tr><th></th><th>NO</th><th>카테고리</th><th>원문 제목</th><th>생성 제목</th><th>난이도</th><th>성공 여부</th></tr></thead>
+    <tbody id="contentTableBody"></tbody>
+  </table>
+
+  <h3>생성된 퀴즈 목록</h3>
+  <p class="hint">기사(글) 당 퀴즈 1개만 생성됩니다. 위 목록에서 체크한 콘텐츠의 원문 기사를 기준으로, 중급 결과가 있으면 중급을 우선 사용합니다.</p>
+  <table>
+    <thead><tr><th>NO</th><th>카테고리</th><th>난이도</th><th>원문 제목</th><th>문제</th><th>보기(정답 표시)</th></tr></thead>
+    <tbody id="quizTableBody"></tbody>
+  </table>
+</div>
+
+<!-- ===================== 뉴스 기사 업로드 모달 (Image 3) ===================== -->
+<div class="modal-backdrop" id="uploadModal">
+  <div class="modal">
+    <h2>뉴스 기사 업로드</h2>
+    <input type="file" id="fileInput" accept=".csv,.xlsx" onchange="handleFileSelect()" />
+    <div class="dropzone">파일 드래그 앤 드롭 (또는 위에서 파일 선택)</div>
+    <p class="hint">파일 레이아웃 — 형식: CSV/xlsx, 컬럼: 카테고리/제목/본문/링크</p>
+    <h4>파일 기사 목록</h4>
+    <table>
+      <thead><tr><th></th><th>NO</th><th>카테고리</th><th>제목</th><th>출처 URL</th></tr></thead>
+      <tbody id="uploadPreviewBody"></tbody>
+    </table>
+    <div class="toolbar" style="margin-top:16px">
+      <button onclick="closeModal('uploadModal')">닫기</button>
+      <button class="primary" onclick="confirmUpload()">기사 업로드</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 글 생성 모달 (Image 4/5) ===================== -->
+<div class="modal-backdrop" id="genModal">
+  <div class="modal" style="width:800px">
+    <h2>글 생성</h2>
+    <h4>선택된 기사 목록</h4>
+    <table>
+      <thead><tr><th>NO</th><th>카테고리</th><th>제목</th><th>출처 URL</th></tr></thead>
+      <tbody id="genArticlesBody"></tbody>
+    </table>
+
+    <h4>생성 설정</h4>
+    <div class="settings">
+      <b>난이도 설정</b><br/>
+      <label><input type="checkbox" class="genLevel" value="BEGINNER" checked/> 초급</label>
+      <label><input type="checkbox" class="genLevel" value="INTERMEDIATE" checked/> 중급</label>
+      <label><input type="checkbox" class="genLevel" value="ADVANCED" checked/> 고급</label>
+      <br/><br/>
+      <b>재생성 횟수</b><br/>
+      <input type="number" id="genMaxRegen" value="3" min="0" max="10" style="width:60px" />
+      <br/><br/>
+      <b>유사도 임계값</b><br/>
+      <input type="number" id="genSimThreshold" value="0.5" min="0.1" max="0.9" step="0.05" style="width:60px" />
+    </div>
+
+    <div id="genRunArea" style="display:none; margin-top:16px">
+      <h4>진행률 <span id="genProgress">0/0</span></h4>
+      <div id="genLogs"></div>
+    </div>
+
+    <div class="toolbar" style="margin-top:16px">
+      <button id="genStartBtn" class="primary" onclick="startGeneration()">글 생성 시작</button>
+      <button id="genStopBtn" class="primary" style="display:none" onclick="stopGeneration()">Stop</button>
+      <button id="genDoneBtn" class="primary" style="display:none" onclick="doneGeneration()">Done</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "";
+let META = { categories: [], levels: [] };
+let selectedSourceIds = new Set();
+let selectedContentIds = new Set();
+let uploadPreviewRows = [];
+let currentJobId = null;
+let pollTimer = null;
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) { const t = await res.text(); alert("오류: " + t); throw new Error(t); }
+  return res.headers.get("content-type")?.includes("json") ? res.json() : res;
+}
+
+function catLabel(code) { return META.categories.find(c => c.code === code)?.label || code; }
+function levelLabel(code) { return META.levels.find(l => l.code === code)?.label || code; }
+
+async function loadMeta() {
+  META = await api("/api/meta");
+  const catSel = document.getElementById("filterCategory");
+  META.categories.forEach(c => catSel.insertAdjacentHTML("beforeend", `<option value="${c.code}">${c.label}</option>`));
+  const lvlSel = document.getElementById("filterLevel");
+  META.levels.forEach(l => lvlSel.insertAdjacentHTML("beforeend", `<option value="${l.code}">${l.label}</option>`));
+}
+
+function switchTab(name) {
+  document.getElementById("sourceTab").style.display = name === "source" ? "block" : "none";
+  document.getElementById("contentTab").style.display = name === "content" ? "block" : "none";
+  document.getElementById("tabSourceBtn").classList.toggle("active", name === "source");
+  document.getElementById("tabContentBtn").classList.toggle("active", name === "content");
+  if (name === "source") loadSource(); else { loadContent(); loadQuizzes(); }
+}
+
+// ── Source List ──────────────────────────────────────────────────────────
+async function loadSource() {
+  const rows = await api("/api/source");
+  const body = document.getElementById("sourceTableBody");
+  body.innerHTML = rows.map((r, i) => `
+    <tr>
+      <td><input type="checkbox" data-id="${r.id}" onchange="toggleSourceSelect('${r.id}', this.checked)" checked /></td>
+      <td>${i + 1}</td><td>${catLabel(r.category)}</td><td>${r.title}</td>
+      <td>${r.source_url || ""}</td><td>${r.is_generated ? "Y" : "N"}</td>
+    </tr>`).join("");
+  selectedSourceIds = new Set(rows.map(r => r.id));
+}
+function toggleSourceSelect(id, checked) {
+  checked ? selectedSourceIds.add(id) : selectedSourceIds.delete(id);
+}
+
+// ── 기사 등록 (업로드) 모달 ──────────────────────────────────────────────
+function openUploadModal() {
+  uploadPreviewRows = [];
+  document.getElementById("uploadPreviewBody").innerHTML = "";
+  document.getElementById("uploadModal").classList.add("open");
+}
+function closeModal(id) { document.getElementById(id).classList.remove("open"); }
+
+async function handleFileSelect() {
+  const input = document.getElementById("fileInput");
+  const file = input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await api("/api/source/parse-file", { method: "POST", body: fd });
+    uploadPreviewRows = res.rows;
+    renderUploadPreview();
+  } catch (e) {
+    // fetch 자체가 실패(서버 다운/네트워크 오류)하면 api()의 res.ok 체크를 못 타서
+    // 여기서 못 잡으면 미리보기가 조용히 안 뜨는 채로 끝나버림.
+    console.error("파일 업로드 실패:", e);
+    alert("파일을 읽는 중 오류가 발생했습니다: " + e.message + "\n(서버가 실행 중인지 확인해주세요.)");
+    uploadPreviewRows = [];
+    renderUploadPreview();
+  } finally {
+    input.value = "";  // 같은 파일을 다시 선택해도 onchange가 재발동하도록 초기화
+  }
+}
+
+function renderUploadPreview() {
+  const body = document.getElementById("uploadPreviewBody");
+  body.innerHTML = uploadPreviewRows.map(r => `
+    <tr style="${r.category_valid ? "" : "background:#ffebee"}">
+      <td><input type="checkbox" data-idx="${r.row_idx}" ${r.category_valid ? "checked" : "disabled"} /></td>
+      <td>${r.row_idx + 1}</td>
+      <td>${r.category_label}${r.category_valid ? "" : " (매칭 실패)"}</td>
+      <td>${r.title}</td><td>${r.source_url}</td>
+    </tr>`).join("");
+}
+
+async function confirmUpload() {
+  const checked = [...document.querySelectorAll("#uploadPreviewBody input[type=checkbox]:checked")]
+    .map(cb => parseInt(cb.dataset.idx));
+  const rows = uploadPreviewRows.filter(r => checked.includes(r.row_idx) && r.category_valid)
+    .map(r => ({ category_code: r.category_code, title: r.title, content: r.content, source_url: r.source_url }));
+  if (!rows.length) { alert("업로드할 기사를 선택하세요 (카테고리 매칭 실패 행은 제외됩니다)."); return; }
+  await api("/api/source/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }) });
+  closeModal("uploadModal");
+  loadSource();
+}
+
+// ── 글 생성 모달 ─────────────────────────────────────────────────────────
+function openGenerationModal() {
+  if (!selectedSourceIds.size) { alert("기사를 선택하세요."); return; }
+  document.getElementById("genRunArea").style.display = "none";
+  document.getElementById("genStartBtn").style.display = "inline-block";
+  document.getElementById("genStopBtn").style.display = "none";
+  document.getElementById("genDoneBtn").style.display = "none";
+  document.getElementById("genLogs").innerHTML = "";
+  api("/api/source").then(rows => {
+    const selected = rows.filter(r => selectedSourceIds.has(r.id));
+    document.getElementById("genArticlesBody").innerHTML = selected.map((r, i) => `
+      <tr><td>${i + 1}</td><td>${catLabel(r.category)}</td><td>${r.title}</td><td>${r.source_url || ""}</td></tr>`).join("");
+  });
+  document.getElementById("genModal").classList.add("open");
+}
+
+async function startGeneration() {
+  const levels = [...document.querySelectorAll(".genLevel:checked")].map(cb => cb.value);
+  if (!levels.length) { alert("난이도를 최소 1개 선택하세요."); return; }
+  const body = {
+    article_ids: [...selectedSourceIds],
+    levels,
+    max_regen: parseInt(document.getElementById("genMaxRegen").value),
+    similarity_threshold: parseFloat(document.getElementById("genSimThreshold").value),
+  };
+  const res = await api("/api/generation/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  currentJobId = res.job_id;
+  document.getElementById("genRunArea").style.display = "block";
+  document.getElementById("genStartBtn").style.display = "none";
+  document.getElementById("genStopBtn").style.display = "inline-block";
+  pollJob();
+}
+
+function pollJob() {
+  pollTimer = setInterval(async () => {
+    const job = await api(`/api/generation/jobs/${currentJobId}`);
+    document.getElementById("genProgress").innerText = `${job.done}/${job.total}`;
+    document.getElementById("genLogs").innerText = job.logs.join("\n");
+    document.getElementById("genLogs").scrollTop = 999999;
+    if (job.status !== "running") {
+      clearInterval(pollTimer);
+      document.getElementById("genStopBtn").style.display = "none";
+      document.getElementById("genDoneBtn").style.display = "inline-block";
+    }
+  }, 1500);
+}
+
+async function stopGeneration() {
+  await api(`/api/generation/jobs/${currentJobId}/stop`, { method: "POST" });
+  // 저장은 task 완료 시점마다 이미 되어 있으므로 Stop은 신규 task만 막음.
+}
+
+function doneGeneration() {
+  closeModal("genModal");
+  switchTab("content");
+}
+
+// ── Content List ─────────────────────────────────────────────────────────
+async function loadContent() {
+  const params = new URLSearchParams();
+  const c = document.getElementById("filterCategory").value;
+  const l = document.getElementById("filterLevel").value;
+  const s = document.getElementById("filterStatus").value;
+  if (c) params.set("category", c);
+  if (l) params.set("level", l);
+  if (s) params.set("status", s);
+  const rows = await api("/api/content?" + params.toString());
+  const body = document.getElementById("contentTableBody");
+  body.innerHTML = rows.map((r, i) => {
+    const statusMap = { success: '<span class="badge-ok">Y</span>',
+      similarity_failed: '<span class="badge-fail">유사도 실패</span>',
+      filter_rejected: `<span class="badge-fail">N (${r.fail_reason || ""})</span>`,
+      error: `<span class="badge-fail">오류 (${r.fail_reason || ""})</span>` }[r.status] || r.status;
+    const defaultChecked = r.status === "success" ? "checked" : "";
+    return `<tr>
+      <td><input type="checkbox" data-id="${r.id}" ${defaultChecked} onchange="toggleContentSelect('${r.id}', this.checked)"/></td>
+      <td>${i + 1}</td><td>${catLabel(r.content_category)}</td>
+      <td>${r.source_title}</td><td>${r.gen_title || "-"}</td>
+      <td>${levelLabel(r.content_level)}</td><td>${statusMap}</td>
+    </tr>`;
+  }).join("");
+  selectedContentIds = new Set(rows.filter(r => r.status === "success").map(r => r.id));
+}
+function toggleContentSelect(id, checked) {
+  checked ? selectedContentIds.add(id) : selectedContentIds.delete(id);
+}
+
+async function exportSelected() {
+  if (!selectedContentIds.size) { alert("내보낼 콘텐츠를 선택하세요."); return; }
+  const res = await fetch("/api/content/export", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ result_ids: [...selectedContentIds] }),
+  });
+  if (!res.ok) { alert("내보내기 실패: " + await res.text()); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "neurous_content.csv"; a.click();
+}
+
+// ── 퀴즈 생성 / 목록 ─────────────────────────────────────────────────────
+async function generateQuiz() {
+  if (!selectedContentIds.size) { alert("퀴즈를 생성할 콘텐츠를 선택하세요."); return; }
+  const res = await api("/api/quiz/generate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content_result_ids: [...selectedContentIds] }),
+  });
+  const counts = {};
+  res.results.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const labelMap = { created: "생성됨", skipped_exists: "이미 생성됨(건너뜀)", no_content: "생성할 콘텐츠 없음", error: "오류" };
+  const summary = Object.entries(counts).map(([k, v]) => `${labelMap[k] || k} ${v}건`).join(", ");
+  alert(`퀴즈 생성 결과 (기사 ${res.results.length}건)\n${summary || "처리된 기사가 없습니다."}`);
+  loadQuizzes();
+}
+
+async function loadQuizzes() {
+  const rows = await api("/api/quiz");
+  const body = document.getElementById("quizTableBody");
+  body.innerHTML = rows.map((q, i) => {
+    const choicesHtml = q.choices.map(c => `${c.choice_no}. ${c.choice_text}${c.is_correct ? " ✅" : ""}`).join("<br/>");
+    return `<tr>
+      <td>${i + 1}</td><td>${catLabel(q.quiz_category)}</td><td>${levelLabel(q.quiz_diff)}</td>
+      <td>${q.source_title}</td><td>${q.quiz_question}</td><td>${choicesHtml}</td>
+    </tr>`;
+  }).join("");
+}
+
+loadMeta().then(loadSource);
+</script>
+</body>
+</html>
